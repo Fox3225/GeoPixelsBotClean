@@ -1717,9 +1717,11 @@
 					<div class="gpc-stat"><b>ETA</b><span id="gpc-eta">-</span></div>
 				</div>
 				<div class="gpc-row">
-					<label class="gpc-check"><input id="gpc-free" type="checkbox">  Free</label>
-					<label class="gpc-check"><input id="gpc-alpha" type="checkbox">  Transparentes</label>
-                    <label class="gpc-check"><input id="gpc-smart-priority" type="checkbox">  Prioridade int</label>
+					<label class="gpc-check"><input id="gpc-free" type="checkbox"> Cores gratis</label>
+					<label class="gpc-check"><input id="gpc-alpha" type="checkbox"> Transparentes</label>
+				</div>
+				<div class="gpc-row">
+					<label class="gpc-check"><input id="gpc-smart-priority" type="checkbox"> Prioridade inteligente</label>
 				</div>
 				<div class="gpc-section">
 					<div class="gpc-muted">Excluir cores</div>
