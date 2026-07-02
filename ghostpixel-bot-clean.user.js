@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GhostPixel Bot Clean
 // @namespace    https://github.com/Fox3225/GeoPixelsBotClean
-// @version      1.0.6-clean
+// @version      1.0.7-clean
 // @description  Clean and optimized GeoPixels userscript for painting ghost images, syncing progress, prioritizing colors, buying missing colors, and managing Energy Capacity.
 // @author       Fox3225 + Codex
 // @match        https://geopixels.net/*
@@ -20,7 +20,7 @@
 	"use strict";
 
 	const win = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
-	const VERSION = "1.0.6-clean";
+	const VERSION = "1.0.7-clean";
 	const TILE_SIZE = 1000;
 	const TILE_BATCH_SIZE = 9;
 	const MAX_PIXELS_PER_REQUEST = 5000;
@@ -1515,7 +1515,7 @@
 				z-index: 2147483647;
 				top: 18px;
 				right: 18px;
-				width: 292px;
+				width: min(292px, calc(100vw - 16px));
 				color: #e5e7eb;
 				background: #111827;
 				border: 1px solid #374151;
@@ -1535,7 +1535,18 @@
 				border-bottom: 1px solid #253044;
 				cursor: move;
 			}
-			.gpc-title { display: flex; align-items: center; gap: 7px; font-weight: 700; }
+			.gpc-title {
+				display: flex;
+				align-items: center;
+				gap: 7px;
+				min-width: 0;
+				font-weight: 700;
+			}
+			.gpc-title span:last-child {
+				overflow: hidden;
+				text-overflow: ellipsis;
+				white-space: nowrap;
+			}
 			#gpc-dot {
 				width: 8px;
 				height: 8px;
@@ -1556,11 +1567,13 @@
 				background: #172033;
 				color: #cbd5e1;
 				cursor: pointer;
+				flex: 0 0 auto;
 			}
 			#gpc-body { padding: 11px; }
 			#gpc-panel.gpc-min #gpc-body { display: none; }
-			#gpc-panel.gpc-min { width: 164px; }
+			#gpc-panel.gpc-min { width: min(206px, calc(100vw - 16px)); }
 			.gpc-row { display: flex; gap: 7px; align-items: center; }
+			#gpc-head > .gpc-row { flex: 0 0 auto; }
 			.gpc-row + .gpc-row { margin-top: 7px; }
 			.gpc-btn {
 				height: 30px;
@@ -1789,6 +1802,7 @@
 		ui.smartPriority.checked = !!settings.smartPriority;
 		panel.classList.toggle("gpc-min", !!settings.minimized);
 		ui.min.textContent = settings.minimized ? "+" : "-";
+		ui.min.title = settings.minimized ? "Expandir" : "Minimize";
 		if (Number.isFinite(settings.panelLeft) && Number.isFinite(settings.panelTop)) {
 			panel.style.left = settings.panelLeft + "px";
 			panel.style.top = settings.panelTop + "px";
@@ -1881,15 +1895,38 @@
 			settings.minimized = !settings.minimized;
 			panel.classList.toggle("gpc-min", settings.minimized);
 			ui.min.textContent = settings.minimized ? "+" : "-";
+			ui.min.title = settings.minimized ? "Expandir" : "Minimize";
+			requestAnimationFrame(() => clampPanelToViewport(true));
 			saveSettings();
 		});
 
 		enableDrag();
+		clampPanelToViewport(false);
+		window.addEventListener("resize", () => clampPanelToViewport(true));
 		renderIgnoredColors();
 		renderPriorityColors();
 		setStatus("idle", "Pronto");
 		setButtons();
 		updateProgress();
+	}
+
+	function clampPanelToViewport(persist) {
+		if (!ui.panel || !ui.head) return;
+		const rect = ui.panel.getBoundingClientRect();
+		const maxLeft = Math.max(8, window.innerWidth - rect.width - 8);
+		const maxTop = Math.max(8, window.innerHeight - ui.head.offsetHeight - 8);
+		const left = Math.max(8, Math.min(maxLeft, rect.left));
+		const top = Math.max(8, Math.min(maxTop, rect.top));
+
+		ui.panel.style.left = left + "px";
+		ui.panel.style.top = top + "px";
+		ui.panel.style.right = "auto";
+
+		if (persist) {
+			settings.panelLeft = Math.round(left);
+			settings.panelTop = Math.round(top);
+			saveSettings();
+		}
 	}
 
 	function enableDrag() {
