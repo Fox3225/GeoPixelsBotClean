@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GhostPixel Bot Clean
 // @namespace    https://github.com/Fox3225/GeoPixelsBotClean
-// @version      1.0.7-clean
+// @version      1.0.8-clean
 // @description  Clean and optimized GeoPixels userscript for painting ghost images, syncing progress, prioritizing colors, buying missing colors, and managing Energy Capacity.
 // @author       Fox3225 + Codex
 // @match        https://geopixels.net/*
@@ -20,7 +20,7 @@
 	"use strict";
 
 	const win = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
-	const VERSION = "1.0.7-clean";
+	const VERSION = "1.0.8-clean";
 	const TILE_SIZE = 1000;
 	const TILE_BATCH_SIZE = 9;
 	const MAX_PIXELS_PER_REQUEST = 5000;
@@ -841,7 +841,8 @@
 		state.remaining = 0;
 	}
 
-	function buildTargets() {
+	function buildTargets(options = {}) {
+		const includeUnowned = !!options.includeUnowned;
 		const source = getGhostSource();
 		if (!source) {
 			throw new Error("Ghost image nao carregada. Carregue ou posicione a ghost image no GeoPixels primeiro.");
@@ -854,6 +855,7 @@
 			source.gridY,
 			source.imageData.data.length,
 			settingsSignature(),
+			includeUnowned ? "all-colors" : "owned-colors",
 		].join(":");
 
 		if (targetCache && targetCache.sourceKey === sourceKey) return targetCache;
@@ -876,7 +878,7 @@
 			if (!settings.includeFreeColors && isFree) continue;
 			if (priority.size && !priority.has(colorId)) continue;
 			if (ignored.has(colorId)) continue;
-			if (owned && !isFree && !owned.has(colorId)) continue;
+			if (!includeUnowned && owned && !isFree && !owned.has(colorId)) continue;
 
 			const x = source.gridX + (pixelIndex % width);
 			const y = source.gridY - Math.floor(pixelIndex / width);
@@ -965,28 +967,36 @@
 		}
 	}
 
-	function getGhostColorIds() {
-		const source = getGhostSource();
-		if (!source) {
-			throw new Error("Ghost image nao carregada. Carregue ou posicione a ghost image no GeoPixels primeiro.");
-		}
-
-		const colors = new Set();
-		const data = source.imageData.data;
-		for (let i = 0; i < data.length; i += 4) {
-			const colorId = rgbaToColorId(data[i], data[i + 1], data[i + 2], data[i + 3]);
-			if (colorId !== -1 && !FREE_COLOR_IDS.has(colorId)) colors.add(colorId);
-		}
-		return colors;
-	}
-
-	function getMissingGhostColors() {
+	async function getMissingRequiredColors() {
 		const owned = getOwnedColorIds();
 		if (!owned) throw new Error("Lista de cores compradas ainda nao carregou no GeoPixels.");
 
-		return [...getGhostColorIds()]
+		// Force a full, current board comparison that also includes targets whose
+		// paid colors are not owned yet. Normal painting still excludes them.
+		invalidateTargets();
+		await syncBoard({ includeUnowned: true });
+		const cache = buildTargets({ includeUnowned: true });
+		const unsynced = cache.targets.filter((target) => !boardColors.has(target.key));
+		if (unsynced.length) {
+			throw new Error(
+				"Nao foi possivel verificar " + unsynced.length +
+				" pixel(s) no tabuleiro. Tente sincronizar novamente antes de comprar."
+			);
+		}
+
+		const pendingColors = new Set(
+			getRemainingTargets({ includeUnowned: true })
+				.map((target) => target.colorId)
+		);
+
+		const missing = [...pendingColors]
+			.filter((id) => id !== -1 && !FREE_COLOR_IDS.has(id))
 			.filter((id) => !owned.has(id))
 			.sort((a, b) => a - b);
+
+		// Restore the normal paintable-only target view for the panel and bot.
+		buildTargets();
+		return missing;
 	}
 
 	async function buyColor(colorId) {
@@ -1069,13 +1079,17 @@
 			throw new Error("Pare o bot antes de comprar cores.");
 		}
 
-		const missing = getMissingGhostColors();
+		setStatus("syncing", "Verificando as cores dos pixels pendentes...");
+		const missing = await getMissingRequiredColors();
 		if (!missing.length) {
-			setStatus("idle", "Voce ja tem todas as cores da ghost image.");
+			setStatus("idle", "Nenhuma cor precisa ser comprada para os pixels pendentes.");
 			return { bought: 0, total: 0, insufficient: false };
 		}
 
-		const ok = confirm("Comprar " + missing.length + " cor(es) faltante(s) da ghost image?");
+		const ok = confirm(
+			"Comprar " + missing.length +
+			" cor(es) necessaria(s) apenas para os pixels que ainda nao estao prontos?"
+		);
 		if (!ok) {
 			setStatus("idle", "Compra cancelada.");
 			return { bought: 0, total: missing.length, cancelled: true };
@@ -1156,8 +1170,8 @@
 		return response.json();
 	}
 
-	async function syncBoard() {
-		const cache = buildTargets();
+	async function syncBoard(options = {}) {
+		const cache = buildTargets(options);
 		if (!cache.tileKeys.length) return;
 
 		setStatus("syncing", "Sincronizando " + cache.tileKeys.length + " tile(s)...");
@@ -1190,8 +1204,8 @@
 		updateProgress();
 	}
 
-	function getRemainingTargets() {
-		const cache = buildTargets();
+	function getRemainingTargets(options = {}) {
+		const cache = buildTargets(options);
 		return cache.targets.filter((target) => boardColors.get(target.key) !== target.colorId);
 	}
 
@@ -1760,7 +1774,7 @@
 					<div id="gpc-priority-list">Nenhuma</div>
 				</div>
 				<div class="gpc-section">
-					<button id="gpc-buy-colors" class="gpc-btn gpc-grow" type="button" style="width:100%;">Comprar todas as cores</button>
+					<button id="gpc-buy-colors" class="gpc-btn gpc-grow" type="button" style="width:100%;">Comprar cores pendentes</button>
 				</div>
 				<div class="gpc-section">
 					<button id="gpc-buy-capacity" class="gpc-btn gpc-grow" type="button" style="width:100%;">Comprar Energy Capacity agora</button>
