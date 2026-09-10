@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GhostPixel Bot Clean
 // @namespace    https://github.com/Fox3225/GeoPixelsBotClean
-// @version      1.1.1-clean
+// @version      1.1.2-clean
 // @description  Clean and optimized GeoPixels userscript for painting ghost images, syncing progress, completion notifications, prioritizing colors, buying missing colors, and managing Energy Capacity.
 // @author       Fox3225 + Codex
 // @match        https://geopixels.net/*
@@ -23,7 +23,7 @@
 	"use strict";
 
 	const win = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
-	const VERSION = "1.1.1-clean";
+	const VERSION = "1.1.2-clean";
 	const ACCOUNT_MONITOR_URL = "http://127.0.0.1:47631/connect";
 	const TILE_SIZE = 1000;
 	const TILE_BATCH_SIZE = 9;
@@ -653,8 +653,18 @@
 
 	async function connectAccountMonitor() {
 		setStatus("syncing", "Conectando o monitor local...");
+		const popupName = "ghostpixel-monitor-connect";
+		let popup = null;
+		try {
+			popup = win.open("about:blank", popupName, "popup,width=460,height=220");
+			if (popup) {
+				popup.document.title = "GhostPixel Monitor";
+				popup.document.body.textContent = "Conectando ao GhostPixel Monitor...";
+			}
+		} catch {}
 		const auth = await getAuthPayloadAsync();
 		if (!auth.token || !Number.isFinite(auth.userId)) {
+			try { if (popup && !popup.closed) popup.close(); } catch {}
 			setStatus("error", "Dados da conta indisponiveis. Atualize a pagina ou faca login novamente.");
 			return;
 		}
@@ -679,9 +689,34 @@
 					ontimeout: () => reject(new Error("tempo esgotado")),
 				});
 			});
+			try { if (popup && !popup.closed) popup.close(); } catch {}
 			setStatus("done", "Monitor conectado. Voce ja pode fechar o navegador.");
 		} catch (error) {
-			setStatus("error", "Abra o GhostPixel Monitor no Windows e tente novamente.");
+			try {
+				if (!popup || popup.closed) throw new Error("popup bloqueado");
+				const form = document.createElement("form");
+				form.method = "POST";
+				form.action = ACCOUNT_MONITOR_URL;
+				form.target = popupName;
+				form.enctype = "application/x-www-form-urlencoded";
+				for (const [name, value] of Object.entries({
+					channel: "connect-v1",
+					userId: String(auth.userId),
+					token: String(auth.token),
+				})) {
+					const input = document.createElement("input");
+					input.type = "hidden";
+					input.name = name;
+					input.value = value;
+					form.appendChild(input);
+				}
+				document.body.appendChild(form);
+				form.submit();
+				form.remove();
+				setStatus("done", "Conexao enviada ao monitor. A janela auxiliar fechara sozinha.");
+			} catch {
+				setStatus("error", "Abra o GhostPixel Monitor e permita a janela auxiliar do navegador.");
+			}
 		}
 	}
 
