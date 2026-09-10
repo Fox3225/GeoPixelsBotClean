@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GhostPixel Bot Clean
 // @namespace    https://github.com/Fox3225/GeoPixelsBotClean
-// @version      1.1.0-clean
+// @version      1.1.1-clean
 // @description  Clean and optimized GeoPixels userscript for painting ghost images, syncing progress, completion notifications, prioritizing colors, buying missing colors, and managing Energy Capacity.
 // @author       Fox3225 + Codex
 // @match        https://geopixels.net/*
@@ -13,15 +13,17 @@
 // @downloadURL  https://raw.githubusercontent.com/Fox3225/GeoPixelsBotClean/main/ghostpixel-bot-clean.user.js
 // @updateURL    https://raw.githubusercontent.com/Fox3225/GeoPixelsBotClean/main/ghostpixel-bot-clean.user.js
 // @run-at       document-idle
+// @connect      127.0.0.1
 // @grant        unsafeWindow
 // @grant        GM_notification
+// @grant        GM_xmlhttpRequest
 // ==/UserScript==
 
 (function () {
 	"use strict";
 
 	const win = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
-	const VERSION = "1.1.0-clean";
+	const VERSION = "1.1.1-clean";
 	const ACCOUNT_MONITOR_URL = "http://127.0.0.1:47631/connect";
 	const TILE_SIZE = 1000;
 	const TILE_BATCH_SIZE = 9;
@@ -659,15 +661,24 @@
 
 		const data = JSON.stringify({ userId: auth.userId, token: String(auth.token) });
 		try {
-			const response = await fetch(ACCOUNT_MONITOR_URL, {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					"X-GhostPixel-Monitor": "connect-v1",
-				},
-				body: data,
+			await new Promise((resolve, reject) => {
+				GM_xmlhttpRequest({
+					method: "POST",
+					url: ACCOUNT_MONITOR_URL,
+					headers: {
+						"Content-Type": "application/json",
+						"X-GhostPixel-Monitor": "connect-v1",
+					},
+					data,
+					timeout: 5000,
+					onload: (response) => response.status === 200
+						? resolve(response)
+						: reject(new Error("HTTP " + response.status)),
+					onerror: () => reject(new Error("falha de conexao")),
+					onabort: () => reject(new Error("conexao cancelada")),
+					ontimeout: () => reject(new Error("tempo esgotado")),
+				});
 			});
-			if (!response.ok) throw new Error("HTTP " + response.status);
 			setStatus("done", "Monitor conectado. Voce ja pode fechar o navegador.");
 		} catch (error) {
 			setStatus("error", "Abra o GhostPixel Monitor no Windows e tente novamente.");
