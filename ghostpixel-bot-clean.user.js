@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GhostPixel Bot Clean
 // @namespace    https://github.com/Fox3225/GeoPixelsBotClean
-// @version      1.0.9-clean
+// @version      1.1.0-clean
 // @description  Clean and optimized GeoPixels userscript for painting ghost images, syncing progress, completion notifications, prioritizing colors, buying missing colors, and managing Energy Capacity.
 // @author       Fox3225 + Codex
 // @match        https://geopixels.net/*
@@ -21,7 +21,8 @@
 	"use strict";
 
 	const win = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
-	const VERSION = "1.0.9-clean";
+	const VERSION = "1.1.0-clean";
+	const ACCOUNT_MONITOR_URL = "http://127.0.0.1:47631/connect";
 	const TILE_SIZE = 1000;
 	const TILE_BATCH_SIZE = 9;
 	const MAX_PIXELS_PER_REQUEST = 5000;
@@ -646,6 +647,31 @@
 		}
 
 		return readEnergy();
+	}
+
+	async function connectAccountMonitor() {
+		setStatus("syncing", "Conectando o monitor local...");
+		const auth = await getAuthPayloadAsync();
+		if (!auth.token || !Number.isFinite(auth.userId)) {
+			setStatus("error", "Dados da conta indisponiveis. Atualize a pagina ou faca login novamente.");
+			return;
+		}
+
+		const data = JSON.stringify({ userId: auth.userId, token: String(auth.token) });
+		try {
+			const response = await fetch(ACCOUNT_MONITOR_URL, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					"X-GhostPixel-Monitor": "connect-v1",
+				},
+				body: data,
+			});
+			if (!response.ok) throw new Error("HTTP " + response.status);
+			setStatus("done", "Monitor conectado. Voce ja pode fechar o navegador.");
+		} catch (error) {
+			setStatus("error", "Abra o GhostPixel Monitor no Windows e tente novamente.");
+		}
 	}
 
 	function urlToString(input) {
@@ -1799,6 +1825,9 @@
 					<button id="gpc-stop" class="gpc-btn gpc-danger gpc-grow" type="button">Parar</button>
 					<button id="gpc-sync" class="gpc-btn" type="button">Sync</button>
 				</div>
+				<div class="gpc-row">
+					<button id="gpc-connect-monitor" class="gpc-btn gpc-grow" type="button">Conectar Monitor</button>
+				</div>
 				<div id="gpc-message">Pronto</div>
 				<div id="gpc-progress"><div id="gpc-bar"></div></div>
 				<div class="gpc-stats">
@@ -1852,6 +1881,7 @@
 		ui.start = panel.querySelector("#gpc-start");
 		ui.stop = panel.querySelector("#gpc-stop");
 		ui.sync = panel.querySelector("#gpc-sync");
+		ui.connectMonitor = panel.querySelector("#gpc-connect-monitor");
 		ui.min = panel.querySelector("#gpc-min");
 		ui.status = panel.querySelector("#gpc-status");
 		ui.dot = panel.querySelector("#gpc-dot");
@@ -1890,6 +1920,7 @@
 		ui.start.addEventListener("click", startBot);
 		ui.stop.addEventListener("click", requestStop);
 		ui.sync.addEventListener("click", manualSync);
+		ui.connectMonitor.addEventListener("click", connectAccountMonitor);
 		ui.free.addEventListener("change", () => {
 			settings.includeFreeColors = ui.free.checked;
 			applyFiltersChanged();
