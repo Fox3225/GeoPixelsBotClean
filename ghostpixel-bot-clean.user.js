@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         GhostPixel Bot Clean
 // @namespace    https://github.com/Fox3225/GeoPixelsBotClean
-// @version      1.0.8-clean
-// @description  Clean and optimized GeoPixels userscript for painting ghost images, syncing progress, prioritizing colors, buying missing colors, and managing Energy Capacity.
+// @version      1.0.9-clean
+// @description  Clean and optimized GeoPixels userscript for painting ghost images, syncing progress, completion notifications, prioritizing colors, buying missing colors, and managing Energy Capacity.
 // @author       Fox3225 + Codex
 // @match        https://geopixels.net/*
 // @match        https://*.geopixels.net/*
@@ -14,13 +14,14 @@
 // @updateURL    https://raw.githubusercontent.com/Fox3225/GeoPixelsBotClean/main/ghostpixel-bot-clean.user.js
 // @run-at       document-idle
 // @grant        unsafeWindow
+// @grant        GM_notification
 // ==/UserScript==
 
 (function () {
 	"use strict";
 
 	const win = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
-	const VERSION = "1.0.8-clean";
+	const VERSION = "1.0.9-clean";
 	const TILE_SIZE = 1000;
 	const TILE_BATCH_SIZE = 9;
 	const MAX_PIXELS_PER_REQUEST = 5000;
@@ -55,6 +56,8 @@
 	let purchaseObserverInstalled = false;
 	let originalFetch = null;
 	let authCache = null;
+	let completionNotificationSent = false;
+	let hadPendingTargets = false;
 	const purchaseEvents = [];
 	const purchasedColorIds = new Set();
 	const boardColors = new Map();
@@ -999,6 +1002,61 @@
 		return missing;
 	}
 
+	function prepareCompletionNotifications() {
+		try {
+			if (
+				typeof GM_notification === "function" ||
+				(typeof GM !== "undefined" && typeof GM.notification === "function")
+			) {
+				return;
+			}
+			if (typeof Notification !== "undefined" && Notification.permission === "default") {
+				const permissionRequest = Notification.requestPermission();
+				if (permissionRequest && typeof permissionRequest.catch === "function") {
+					permissionRequest.catch((error) => log("warn", "Nao foi possivel solicitar notificacoes.", error));
+				}
+			}
+		} catch (error) {
+			log("warn", "Nao foi possivel preparar as notificacoes.", error);
+		}
+	}
+
+	function notifyCompletion() {
+		if (completionNotificationSent || !hadPendingTargets) return;
+		completionNotificationSent = true;
+
+		const title = "GhostPixel - Arte concluida!";
+		const text = "Todos os pixels da imagem foram finalizados.";
+		const icon = "https://raw.githubusercontent.com/nymtuta/GeoPixelsBot/refs/heads/main/img/icon.png";
+		const focusPage = () => {
+			try { window.focus(); } catch {}
+		};
+
+		try {
+			if (typeof GM_notification === "function") {
+				GM_notification({ title, text, image: icon, timeout: 12000, onclick: focusPage });
+				return;
+			}
+			if (typeof GM !== "undefined" && typeof GM.notification === "function") {
+				Promise.resolve(GM.notification({ title, text, image: icon, timeout: 12000, onclick: focusPage }))
+					.catch((error) => log("warn", "Falha ao exibir a notificacao.", error));
+				return;
+			}
+			if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+				const notification = new Notification(title, { body: text, icon });
+				notification.onclick = () => {
+					focusPage();
+					notification.close();
+				};
+				setTimeout(() => notification.close(), 12000);
+				return;
+			}
+			log("warn", "Arte concluida, mas as notificacoes nao estao autorizadas.");
+		} catch (error) {
+			log("warn", "Falha ao exibir a notificacao.", error);
+		}
+	}
+
 	async function buyColor(colorId) {
 		colorId = toColorId(colorId);
 		if (colorId === null || colorId === -1) throw new Error("Cor invalida para compra.");
@@ -1365,6 +1423,9 @@
 	async function startBot() {
 		if (state.running) return;
 
+		prepareCompletionNotifications();
+		completionNotificationSent = false;
+		hadPendingTargets = false;
 		state.running = true;
 		state.stopRequested = false;
 		state.placedThisRun = 0;
@@ -1379,10 +1440,12 @@
 			while (!state.stopRequested) {
 				const remainingTargets = getRemainingTargets();
 				state.remaining = remainingTargets.length;
+				if (remainingTargets.length > 0) hadPendingTargets = true;
 				updateProgress();
 
 				if (!remainingTargets.length) {
 					setStatus("done", "Pronto. Todos os pixels ja estao corretos.");
+					notifyCompletion();
 					break;
 				}
 
@@ -1420,6 +1483,7 @@
 
 				if (state.remaining === 0) {
 					setStatus("done", "Pronto. Todos os pixels foram enviados.");
+					notifyCompletion();
 					break;
 				}
 
