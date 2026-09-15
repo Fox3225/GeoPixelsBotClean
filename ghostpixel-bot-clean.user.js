@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GhostPixel Bot Clean
 // @namespace    https://github.com/Fox3225/GeoPixelsBotClean
-// @version      1.1.3-clean
+// @version      1.1.4-clean
 // @description  Clean and optimized GeoPixels userscript for painting ghost images, syncing progress, completion notifications, prioritizing colors, buying missing colors, and managing Energy Capacity.
 // @author       Fox3225 + Codex
 // @match        https://geopixels.net/*
@@ -23,7 +23,7 @@
 	"use strict";
 
 	const win = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
-	const VERSION = "1.1.3-clean";
+	const VERSION = "1.1.4-clean";
 	const ACCOUNT_MONITOR_URL = "http://127.0.0.1:47631/connect";
 	const TILE_SIZE = 1000;
 	const TILE_BATCH_SIZE = 9;
@@ -95,6 +95,119 @@
 			localStorage.setItem(key, value);
 		} catch {}
 	}
+
+	function installLargeGhostStorageBridge() {
+		try {
+			const script = document.createElement("script");
+			script.textContent = `
+				(() => {
+					if (window.__gpcLargeGhostStorageInstalled) return;
+					window.__gpcLargeGhostStorageInstalled = true;
+					const KEY = "ghostImageData";
+					const DB_NAME = "GhostPixelLargeAssets";
+					const STORE_NAME = "templates";
+					const originalGetItem = Storage.prototype.getItem;
+					const originalSetItem = Storage.prototype.setItem;
+					const originalRemoveItem = Storage.prototype.removeItem;
+					const openDatabase = () => new Promise((resolve, reject) => {
+						const request = indexedDB.open(DB_NAME, 1);
+						request.onupgradeneeded = () => {
+							if (!request.result.objectStoreNames.contains(STORE_NAME)) {
+								request.result.createObjectStore(STORE_NAME);
+							}
+						};
+						request.onsuccess = () => resolve(request.result);
+						request.onerror = () => reject(request.error);
+					});
+					const writeLargeTemplate = async (value) => {
+						const database = await openDatabase();
+						await new Promise((resolve, reject) => {
+							const transaction = database.transaction(STORE_NAME, "readwrite");
+							transaction.objectStore(STORE_NAME).put(value, KEY);
+							transaction.oncomplete = resolve;
+							transaction.onerror = () => reject(transaction.error);
+						});
+						database.close();
+					};
+					const readLargeTemplate = async () => {
+						const database = await openDatabase();
+						const value = await new Promise((resolve, reject) => {
+							const request = database.transaction(STORE_NAME, "readonly")
+								.objectStore(STORE_NAME).get(KEY);
+							request.onsuccess = () => resolve(request.result || null);
+							request.onerror = () => reject(request.error);
+						});
+						database.close();
+						return value;
+					};
+					const deleteLargeTemplate = async () => {
+						const database = await openDatabase();
+						await new Promise((resolve, reject) => {
+							const transaction = database.transaction(STORE_NAME, "readwrite");
+							transaction.objectStore(STORE_NAME).delete(KEY);
+							transaction.oncomplete = resolve;
+							transaction.onerror = () => reject(transaction.error);
+						});
+						database.close();
+					};
+
+					Storage.prototype.getItem = function (key) {
+						if (this === window.localStorage && String(key) === KEY && window.__gpcLargeGhostValue) {
+							return window.__gpcLargeGhostValue;
+						}
+						return originalGetItem.call(this, key);
+					};
+					Storage.prototype.setItem = function (key, value) {
+						if (this !== window.localStorage || String(key) !== KEY) {
+							return originalSetItem.call(this, key, value);
+						}
+						try {
+							originalSetItem.call(this, key, value);
+							window.__gpcLargeGhostValue = null;
+							deleteLargeTemplate().catch(() => {});
+						} catch (error) {
+							if (!error || (error.name !== "QuotaExceededError" && error.code !== 22)) throw error;
+							originalRemoveItem.call(this, key);
+							window.__gpcLargeGhostValue = String(value);
+							writeLargeTemplate(String(value)).catch((storageError) => {
+								console.error("[GhostPixel] Failed to persist large template", storageError);
+							});
+						}
+					};
+					Storage.prototype.removeItem = function (key) {
+						if (this === window.localStorage && String(key) === KEY) {
+							window.__gpcLargeGhostValue = null;
+							deleteLargeTemplate().catch(() => {});
+						}
+						return originalRemoveItem.call(this, key);
+					};
+
+					const restoreLargeTemplate = async () => {
+						if (originalGetItem.call(window.localStorage, KEY)) return;
+						const value = await readLargeTemplate();
+						if (!value) return;
+						window.__gpcLargeGhostValue = value;
+						let attempts = 0;
+						const restoreWhenReady = () => {
+							if (typeof window.initializeGhostFromStorage === "function") {
+								window.initializeGhostFromStorage();
+								return;
+							}
+							if (++attempts < 40) setTimeout(restoreWhenReady, 250);
+						};
+						restoreWhenReady();
+					};
+					restoreLargeTemplate().catch(() => {});
+				})();
+			`;
+			(document.documentElement || document.head).appendChild(script);
+			script.remove();
+		} catch (error) {
+			log("warn", "Nao foi possivel ativar o armazenamento de templates grandes.", error);
+		}
+	}
+
+	installLargeGhostStorageBridge();
 
 	function installPageBridge() {
 		try {
