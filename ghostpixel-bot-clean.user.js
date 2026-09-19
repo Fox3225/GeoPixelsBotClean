@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GhostPixel Bot Clean
 // @namespace    https://github.com/Fox3225/GeoPixelsBotClean
-// @version      1.1.4-clean
+// @version      1.1.5-clean
 // @description  Clean and optimized GeoPixels userscript for painting ghost images, syncing progress, completion notifications, prioritizing colors, buying missing colors, and managing Energy Capacity.
 // @author       Fox3225 + Codex
 // @match        https://geopixels.net/*
@@ -23,7 +23,7 @@
 	"use strict";
 
 	const win = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
-	const VERSION = "1.1.4-clean";
+	const VERSION = "1.1.5-clean";
 	const ACCOUNT_MONITOR_URL = "http://127.0.0.1:47631/connect";
 	const TILE_SIZE = 1000;
 	const TILE_BATCH_SIZE = 9;
@@ -453,6 +453,7 @@
 			ignoredColors: [],
 			priorityColors: [],
 			smartPriority: true,
+			prioritizeIncorrectColors: false,
 			panelLeft: null,
 			panelTop: null,
 			minimized: false,
@@ -466,6 +467,7 @@
 				? loaded.priorityColors.map(toColorId).filter((id) => id !== null)
 				: [];
 			loaded.smartPriority = loaded.smartPriority !== false;
+			loaded.prioritizeIncorrectColors = loaded.prioritizeIncorrectColors === true;
 			return loaded;
 		} catch {
 			return fallback;
@@ -1030,6 +1032,7 @@
 			[...settings.ignoredColors].sort((a, b) => a - b).join("."),
 			[...settings.priorityColors].sort((a, b) => a - b).join("."),
 			settings.smartPriority ? "smart" : "simple",
+			settings.prioritizeIncorrectColors ? "wrong-first" : "normal-order",
 		].join("|");
 	}
 
@@ -1462,7 +1465,17 @@
 
 	function getRemainingTargets(options = {}) {
 		const cache = buildTargets(options);
-		return cache.targets.filter((target) => boardColors.get(target.key) !== target.colorId);
+		const remaining = cache.targets.filter((target) => boardColors.get(target.key) !== target.colorId);
+		if (!settings.prioritizeIncorrectColors) return remaining;
+
+		return remaining
+			.map((target, index) => ({
+				target,
+				index,
+				incorrect: boardColors.has(target.key) && boardColors.get(target.key) !== -1,
+			}))
+			.sort((a, b) => Number(b.incorrect) - Number(a.incorrect) || a.index - b.index)
+			.map((item) => item.target);
 	}
 
 	function readEnergy() {
@@ -2015,6 +2028,10 @@
 				<div class="gpc-row">
 					<label class="gpc-check"><input id="gpc-smart-priority" type="checkbox"> Prioridade inteligente</label>
 				</div>
+				<div class="gpc-row">
+					<label class="gpc-check"><input id="gpc-wrong-color-priority" type="checkbox"> Priorizar cores incorretas</label>
+				</div>
+				<div class="gpc-muted" style="margin-top:3px;">Corrige pixels ocupados antes de preencher os vazios.</div>
 				<div class="gpc-section">
 					<div class="gpc-muted">Excluir cores</div>
 					<div class="gpc-row" style="margin-top:6px;">
@@ -2066,6 +2083,7 @@
 		ui.free = panel.querySelector("#gpc-free");
 		ui.alpha = panel.querySelector("#gpc-alpha");
 		ui.smartPriority = panel.querySelector("#gpc-smart-priority");
+		ui.wrongColorPriority = panel.querySelector("#gpc-wrong-color-priority");
 		ui.ignoreInput = panel.querySelector("#gpc-ignore-input");
 		ui.ignoreAdd = panel.querySelector("#gpc-ignore-add");
 		ui.ignoreClear = panel.querySelector("#gpc-ignore-clear");
@@ -2080,6 +2098,7 @@
 		ui.free.checked = !!settings.includeFreeColors;
 		ui.alpha.checked = !!settings.includeTransparent;
 		ui.smartPriority.checked = !!settings.smartPriority;
+		ui.wrongColorPriority.checked = !!settings.prioritizeIncorrectColors;
 		panel.classList.toggle("gpc-min", !!settings.minimized);
 		ui.min.textContent = settings.minimized ? "+" : "-";
 		ui.min.title = settings.minimized ? "Expandir" : "Minimize";
@@ -2105,6 +2124,17 @@
 			settings.smartPriority = ui.smartPriority.checked;
 			applyFiltersChanged();
 			setStatus("idle", settings.smartPriority ? "Prioridade inteligente ativada." : "Prioridade inteligente desativada.");
+		});
+		ui.wrongColorPriority.addEventListener("change", () => {
+			settings.prioritizeIncorrectColors = ui.wrongColorPriority.checked;
+			saveSettings();
+			updateProgress();
+			setStatus(
+				"idle",
+				settings.prioritizeIncorrectColors
+					? "Cores incorretas serao corrigidas primeiro."
+					: "Ordem normal de pixels restaurada."
+			);
 		});
 		ui.ignoreAdd.addEventListener("click", () => {
 			const ids = parseColorList(ui.ignoreInput.value);
@@ -2271,6 +2301,12 @@
 			settings.smartPriority = !!enabled;
 			if (ui.smartPriority) ui.smartPriority.checked = settings.smartPriority;
 			applyFiltersChanged();
+		},
+		prioritizeIncorrectColors(enabled = true) {
+			settings.prioritizeIncorrectColors = !!enabled;
+			if (ui.wrongColorPriority) ui.wrongColorPriority.checked = settings.prioritizeIncorrectColors;
+			saveSettings();
+			updateProgress();
 		},
 		buyColor,
 		buyMissingColors: buyMissingGhostColors,
