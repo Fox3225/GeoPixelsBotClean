@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GhostPixel Bot Clean
 // @namespace    https://github.com/Fox3225/GeoPixelsBotClean
-// @version      1.1.5-clean
+// @version      1.1.6-clean
 // @description  Clean and optimized GeoPixels userscript for painting ghost images, syncing progress, completion notifications, prioritizing colors, buying missing colors, and managing Energy Capacity.
 // @author       Fox3225 + Codex
 // @match        https://geopixels.net/*
@@ -23,7 +23,7 @@
 	"use strict";
 
 	const win = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
-	const VERSION = "1.1.5-clean";
+	const VERSION = "1.1.6-clean";
 	const ACCOUNT_MONITOR_URL = "http://127.0.0.1:47631/connect";
 	const TILE_SIZE = 1000;
 	const TILE_BATCH_SIZE = 9;
@@ -216,7 +216,9 @@
 				typeof win.__gpcPlacePixels === "function" &&
 				typeof win.__gpcMakePurchase === "function" &&
 				typeof win.__gpcGetUserData === "function" &&
-				typeof win.__gpcGetFetchEvents === "function"
+				typeof win.__gpcGetFetchEvents === "function" &&
+				typeof win.__gpcSelectArea === "function" &&
+				typeof win.__gpcRenderAreas === "function"
 			) {
 				return true;
 			}
@@ -438,6 +440,110 @@
 							}
 						}
 					});
+					Object.defineProperty(window, "__gpcSelectArea", {
+						configurable: true,
+						value: () => new Promise((resolve, reject) => {
+							const pageMap = readPageGlobal("map");
+							const pixelSize = Number(readPageGlobal("gridSize"));
+							if (!pageMap || !window.turf || !Number.isFinite(pixelSize)) {
+								reject(new Error("O mapa ainda nao esta pronto."));
+								return;
+							}
+							const container = pageMap.getCanvasContainer();
+							const canvas = pageMap.getCanvas();
+							const previousCursor = canvas.style.cursor;
+							const points = [];
+							const cleanup = () => {
+								document.removeEventListener("click", onClick, true);
+								document.removeEventListener("keydown", onKey, true);
+								canvas.style.cursor = previousCursor;
+							};
+							const onKey = (event) => {
+								if (event.key !== "Escape") return;
+								cleanup();
+								reject(new Error("Selecao cancelada."));
+							};
+							const onClick = (event) => {
+								if (!container.contains(event.target)) return;
+								event.preventDefault();
+								event.stopPropagation();
+								event.stopImmediatePropagation();
+								const rect = container.getBoundingClientRect();
+								const lngLat = pageMap.unproject([event.clientX - rect.left, event.clientY - rect.top]);
+								const mercator = window.turf.toMercator([lngLat.lng, lngLat.lat]);
+								points.push({
+									x: Math.round(mercator[0] / pixelSize),
+									y: Math.round(mercator[1] / pixelSize)
+								});
+								if (points.length < 2) return;
+								cleanup();
+								resolve(points);
+							};
+							canvas.style.cursor = "crosshair";
+							document.addEventListener("click", onClick, true);
+							document.addEventListener("keydown", onKey, true);
+						})
+					});
+					Object.defineProperty(window, "__gpcRenderAreas", {
+						configurable: true,
+						value: (areas, attempt = 0) => {
+							const pageMap = readPageGlobal("map");
+							const pixelSize = Number(readPageGlobal("gridSize"));
+							if (!pageMap || !window.turf || !Number.isFinite(pixelSize)) {
+								if (attempt < 20) setTimeout(() => window.__gpcRenderAreas(areas, attempt + 1), 500);
+								return false;
+							}
+							const sourceId = "gpc-area-filters";
+							const featureCollection = {
+								type: "FeatureCollection",
+								features: (Array.isArray(areas) ? areas : []).map((area) => {
+									const minX = Math.min(Number(area.x1), Number(area.x2)) - 0.5;
+									const maxX = Math.max(Number(area.x1), Number(area.x2)) + 0.5;
+									const minY = Math.min(Number(area.y1), Number(area.y2)) - 0.5;
+									const maxY = Math.max(Number(area.y1), Number(area.y2)) + 0.5;
+									const toLngLat = (x, y) => window.turf.toWgs84([x * pixelSize, y * pixelSize]);
+									return {
+										type: "Feature",
+										properties: { mode: area.mode === "exclude" ? "exclude" : "include" },
+										geometry: {
+											type: "Polygon",
+											coordinates: [[
+												toLngLat(minX, minY), toLngLat(maxX, minY),
+												toLngLat(maxX, maxY), toLngLat(minX, maxY),
+												toLngLat(minX, minY)
+											]]
+										}
+									};
+								})
+							};
+							const draw = () => {
+								const existing = pageMap.getSource(sourceId);
+								if (existing) {
+									existing.setData(featureCollection);
+									return true;
+								}
+								pageMap.addSource(sourceId, { type: "geojson", data: featureCollection });
+								pageMap.addLayer({
+									id: sourceId + "-fill", type: "fill", source: sourceId,
+									paint: {
+										"fill-color": ["match", ["get", "mode"], "exclude", "#ef4444", "#22c55e"],
+										"fill-opacity": 0.13
+									}
+								});
+								pageMap.addLayer({
+									id: sourceId + "-line", type: "line", source: sourceId,
+									paint: {
+										"line-color": ["match", ["get", "mode"], "exclude", "#ef4444", "#22c55e"],
+										"line-width": 2
+									}
+								});
+								return true;
+							};
+							if (pageMap.isStyleLoaded()) return draw();
+							pageMap.once("styledata", draw);
+							return true;
+						}
+					});
 				})();
 			`;
 			(document.head || document.documentElement).appendChild(script);
@@ -454,6 +560,7 @@
 			priorityColors: [],
 			smartPriority: true,
 			prioritizeIncorrectColors: false,
+			areas: [],
 			panelLeft: null,
 			panelTop: null,
 			minimized: false,
@@ -468,6 +575,9 @@
 				: [];
 			loaded.smartPriority = loaded.smartPriority !== false;
 			loaded.prioritizeIncorrectColors = loaded.prioritizeIncorrectColors === true;
+			loaded.areas = Array.isArray(loaded.areas)
+				? loaded.areas.map(normalizeArea).filter(Boolean)
+				: [];
 			return loaded;
 		} catch {
 			return fallback;
@@ -848,6 +958,35 @@
 		}
 	}
 
+	function normalizeArea(area, index = 0) {
+		if (!area || typeof area !== "object") return null;
+		if ([area.x1, area.y1, area.x2, area.y2].some((value) => value === null || value === undefined || String(value).trim() === "")) {
+			return null;
+		}
+		const x1 = Number(area.x1);
+		const y1 = Number(area.y1);
+		const x2 = Number(area.x2);
+		const y2 = Number(area.y2);
+		if (![x1, y1, x2, y2].every(Number.isFinite)) return null;
+		return {
+			id: String(area.id || (Date.now() + "-" + index)),
+			mode: area.mode === "exclude" ? "exclude" : "include",
+			x1: Math.trunc(Math.min(x1, x2)),
+			y1: Math.trunc(Math.min(y1, y2)),
+			x2: Math.trunc(Math.max(x1, x2)),
+			y2: Math.trunc(Math.max(y1, y2)),
+		};
+	}
+
+	function coordinateAllowedByAreas(x, y) {
+		const areas = settings.areas || [];
+		const inside = (area) => x >= area.x1 && x <= area.x2 && y >= area.y1 && y <= area.y2;
+		const inclusions = areas.filter((area) => area.mode === "include");
+		if (inclusions.length && !inclusions.some(inside)) return false;
+		if (areas.some((area) => area.mode === "exclude" && inside(area))) return false;
+		return true;
+	}
+
 	function urlToString(input) {
 		if (typeof input === "string") return input;
 		if (input && typeof input.url === "string") return input.url;
@@ -1033,6 +1172,7 @@
 			[...settings.priorityColors].sort((a, b) => a - b).join("."),
 			settings.smartPriority ? "smart" : "simple",
 			settings.prioritizeIncorrectColors ? "wrong-first" : "normal-order",
+			(settings.areas || []).map((area) => [area.mode, area.x1, area.y1, area.x2, area.y2].join(",")).join(";"),
 		].join("|");
 	}
 
@@ -1086,6 +1226,7 @@
 
 			const x = source.gridX + (pixelIndex % width);
 			const y = source.gridY - Math.floor(pixelIndex / width);
+			if (!coordinateAllowedByAreas(x, y)) continue;
 			const key = coordKey(x, y);
 			const target = { x, y, key, colorId };
 			const tk = tileKey(x, y);
@@ -1770,6 +1911,70 @@
 		renderColorChips(ui.priorityList, settings.priorityColors);
 	}
 
+	function areaFromInputs() {
+		return normalizeArea({
+			id: Date.now() + "-" + Math.random().toString(36).slice(2, 8),
+			mode: ui.areaMode.value,
+			x1: ui.areaX1.value,
+			y1: ui.areaY1.value,
+			x2: ui.areaX2.value,
+			y2: ui.areaY2.value,
+		});
+	}
+
+	function addArea(area) {
+		const normalized = normalizeArea(area, settings.areas.length);
+		if (!normalized) {
+			setStatus("error", "Informe coordenadas validas para os dois cantos.");
+			return false;
+		}
+		settings.areas.push(normalized);
+		applyFiltersChanged();
+		setStatus(
+			"idle",
+			normalized.mode === "include"
+				? "Area exclusiva de pintura adicionada."
+				: "Area excluida da pintura."
+		);
+		return true;
+	}
+
+	function renderAreas() {
+		if (!ui.areaList) return;
+		ui.areaList.innerHTML = "";
+		if (!settings.areas.length) {
+			ui.areaList.textContent = "Nenhuma";
+		} else {
+			for (const area of settings.areas) {
+				const item = document.createElement("div");
+				item.className = "gpc-area-item";
+				item.dataset.mode = area.mode;
+				const title = document.createElement("strong");
+				title.textContent = area.mode === "include" ? "Somente dentro" : "Área excluída";
+				const coordinates = document.createElement("span");
+				coordinates.textContent = `(${area.x1}, ${area.y1}) até (${area.x2}, ${area.y2})`;
+				coordinates.className = "gpc-muted";
+				const remove = document.createElement("button");
+				remove.type = "button";
+				remove.className = "gpc-btn gpc-area-remove";
+				remove.textContent = "Remover";
+				remove.addEventListener("click", () => {
+					settings.areas = settings.areas.filter((candidate) => candidate.id !== area.id);
+					applyFiltersChanged();
+					setStatus("idle", "Area removida.");
+				});
+				item.append(title, coordinates, remove);
+				ui.areaList.appendChild(item);
+			}
+		}
+		try {
+			installPageBridge();
+			if (typeof win.__gpcRenderAreas === "function") {
+				win.__gpcRenderAreas(settings.areas.map((area) => ({ ...area })));
+			}
+		} catch {}
+	}
+
 	function renderColorChips(element, colors) {
 		if (!element) return;
 		if (!colors.length) {
@@ -1791,6 +1996,7 @@
 		invalidateTargets();
 		renderIgnoredColors();
 		renderPriorityColors();
+		renderAreas();
 		updateProgress();
 	}
 
@@ -1812,6 +2018,9 @@
 				box-shadow: 0 18px 48px rgba(0,0,0,.35);
 				font: 12px/1.4 Arial, sans-serif;
 				overflow: hidden;
+				display: flex;
+				flex-direction: column;
+				max-height: calc(100vh - 16px);
 			}
 			#gpc-panel * { box-sizing: border-box; }
 			#gpc-head {
@@ -1858,7 +2067,7 @@
 				cursor: pointer;
 				flex: 0 0 auto;
 			}
-			#gpc-body { padding: 11px; }
+			#gpc-body { padding: 11px; overflow-y: auto; }
 			#gpc-panel.gpc-min #gpc-body { display: none; }
 			#gpc-panel.gpc-min { width: min(206px, calc(100vw - 16px)); }
 			.gpc-row { display: flex; gap: 7px; align-items: center; }
@@ -1978,6 +2187,27 @@
 				background: var(--chip-color, transparent);
 				border: 1px solid #475569;
 			}
+			.gpc-area-inputs {
+				display: grid;
+				grid-template-columns: repeat(2, minmax(0, 1fr));
+				gap: 6px;
+				margin-top: 6px;
+			}
+			#gpc-area-list { display: grid; gap: 6px; margin-top: 8px; }
+			.gpc-area-item {
+				display: grid;
+				grid-template-columns: 1fr auto;
+				gap: 3px 7px;
+				align-items: center;
+				padding: 7px;
+				border: 1px solid #334155;
+				border-radius: 6px;
+				background: #0b1220;
+			}
+			.gpc-area-item strong { color: #e2e8f0; }
+			.gpc-area-item[data-mode="include"] strong { color: #4ade80; }
+			.gpc-area-item[data-mode="exclude"] strong { color: #f87171; }
+			.gpc-area-remove { grid-row: 1 / 3; grid-column: 2; }
 			#gpc-status {
 				display: inline-flex;
 				align-items: center;
@@ -2056,6 +2286,30 @@
 					<div id="gpc-priority-list">Nenhuma</div>
 				</div>
 				<div class="gpc-section">
+					<div class="gpc-muted">Áreas de pintura</div>
+					<div class="gpc-muted" style="margin-top:3px;">Verde: pintar somente dentro. Vermelho: não pintar dentro.</div>
+					<div class="gpc-row" style="margin-top:6px;">
+						<select id="gpc-area-mode" class="gpc-input">
+							<option value="include">Pintar somente nesta área</option>
+							<option value="exclude">Excluir esta área</option>
+						</select>
+					</div>
+					<div class="gpc-area-inputs">
+						<input id="gpc-area-x1" class="gpc-input" type="number" placeholder="X do canto 1">
+						<input id="gpc-area-y1" class="gpc-input" type="number" placeholder="Y do canto 1">
+						<input id="gpc-area-x2" class="gpc-input" type="number" placeholder="X do canto 2">
+						<input id="gpc-area-y2" class="gpc-input" type="number" placeholder="Y do canto 2">
+					</div>
+					<div class="gpc-row">
+						<button id="gpc-area-select" class="gpc-btn gpc-grow" type="button">Selecionar no mapa</button>
+						<button id="gpc-area-add" class="gpc-btn gpc-grow" type="button">Adicionar</button>
+					</div>
+					<div class="gpc-row">
+						<button id="gpc-area-clear" class="gpc-btn gpc-grow" type="button">Limpar áreas</button>
+					</div>
+					<div id="gpc-area-list" class="gpc-muted">Nenhuma</div>
+				</div>
+				<div class="gpc-section">
 					<button id="gpc-buy-colors" class="gpc-btn gpc-grow" type="button" style="width:100%;">Comprar cores pendentes</button>
 				</div>
 				<div class="gpc-section">
@@ -2092,6 +2346,15 @@
 		ui.priorityAdd = panel.querySelector("#gpc-priority-add");
 		ui.priorityClear = panel.querySelector("#gpc-priority-clear");
 		ui.priorityList = panel.querySelector("#gpc-priority-list");
+		ui.areaMode = panel.querySelector("#gpc-area-mode");
+		ui.areaX1 = panel.querySelector("#gpc-area-x1");
+		ui.areaY1 = panel.querySelector("#gpc-area-y1");
+		ui.areaX2 = panel.querySelector("#gpc-area-x2");
+		ui.areaY2 = panel.querySelector("#gpc-area-y2");
+		ui.areaSelect = panel.querySelector("#gpc-area-select");
+		ui.areaAdd = panel.querySelector("#gpc-area-add");
+		ui.areaClear = panel.querySelector("#gpc-area-clear");
+		ui.areaList = panel.querySelector("#gpc-area-list");
 		ui.buyColors = panel.querySelector("#gpc-buy-colors");
 		ui.buyCapacity = panel.querySelector("#gpc-buy-capacity");
 
@@ -2178,6 +2441,45 @@
 		ui.priorityInput.addEventListener("keydown", (event) => {
 			if (event.key === "Enter") ui.priorityAdd.click();
 		});
+		ui.areaAdd.addEventListener("click", () => {
+			if (addArea(areaFromInputs())) {
+				ui.areaX1.value = "";
+				ui.areaY1.value = "";
+				ui.areaX2.value = "";
+				ui.areaY2.value = "";
+			}
+		});
+		ui.areaSelect.addEventListener("click", async () => {
+			installPageBridge();
+			if (typeof win.__gpcSelectArea !== "function") {
+				setStatus("error", "O seletor do mapa ainda nao esta disponivel.");
+				return;
+			}
+			ui.areaSelect.disabled = true;
+			ui.areaSelect.textContent = "Clique em 2 cantos...";
+			setStatus("syncing", "Clique em dois cantos no mapa. Pressione Esc para cancelar.");
+			try {
+				const points = await win.__gpcSelectArea();
+				if (!points || points.length < 2) throw new Error("Selecao incompleta.");
+				ui.areaX1.value = points[0].x;
+				ui.areaY1.value = points[0].y;
+				ui.areaX2.value = points[1].x;
+				ui.areaY2.value = points[1].y;
+				addArea(areaFromInputs());
+			} catch (error) {
+				setStatus("idle", error && error.message ? error.message : "Selecao cancelada.");
+			} finally {
+				ui.areaSelect.disabled = false;
+				ui.areaSelect.textContent = "Selecionar no mapa";
+			}
+		});
+		ui.areaClear.addEventListener("click", () => {
+			if (!settings.areas.length) return;
+			if (!win.confirm("Remover todas as areas de pintura?")) return;
+			settings.areas = [];
+			applyFiltersChanged();
+			setStatus("idle", "Todas as areas foram removidas.");
+		});
 		ui.buyColors.addEventListener("click", async () => {
 			ui.buyColors.disabled = true;
 			try {
@@ -2216,6 +2518,7 @@
 		window.addEventListener("resize", () => clampPanelToViewport(true));
 		renderIgnoredColors();
 		renderPriorityColors();
+		renderAreas();
 		setStatus("idle", "Pronto");
 		setButtons();
 		updateProgress();
