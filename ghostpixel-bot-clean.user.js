@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GhostPixel Bot Clean
 // @namespace    https://github.com/Fox3225/GeoPixelsBotClean
-// @version      1.1.6-clean
+// @version      1.1.7-clean
 // @description  Clean and optimized GeoPixels userscript for painting ghost images, syncing progress, completion notifications, prioritizing colors, buying missing colors, and managing Energy Capacity.
 // @author       Fox3225 + Codex
 // @match        https://geopixels.net/*
@@ -23,7 +23,7 @@
 	"use strict";
 
 	const win = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
-	const VERSION = "1.1.6-clean";
+	const VERSION = "1.1.7-clean";
 	const ACCOUNT_MONITOR_URL = "http://127.0.0.1:47631/connect";
 	const TILE_SIZE = 1000;
 	const TILE_BATCH_SIZE = 9;
@@ -987,6 +987,32 @@
 		return true;
 	}
 
+	function describeAreaPurchaseScope() {
+		const areas = settings.areas || [];
+		const inclusions = areas.filter((area) => area.mode === "include");
+		const exclusions = areas.filter((area) => area.mode === "exclude");
+
+		if (inclusions.length) {
+			let description = inclusions.length === 1
+				? "somente dentro do retangulo verde"
+				: "somente dentro dos " + inclusions.length + " retangulos verdes";
+			if (exclusions.length) {
+				description += exclusions.length === 1
+					? ", descontando a area vermelha"
+					: ", descontando as " + exclusions.length + " areas vermelhas";
+			}
+			return description;
+		}
+
+		if (exclusions.length) {
+			return exclusions.length === 1
+				? "fora do retangulo vermelho"
+				: "fora dos " + exclusions.length + " retangulos vermelhos";
+		}
+
+		return "em toda a arte";
+	}
+
 	function urlToString(input) {
 		if (typeof input === "string") return input;
 		if (input && typeof input.url === "string") return input.url;
@@ -1329,10 +1355,11 @@
 			);
 		}
 
-		const pendingColors = new Set(
-			getRemainingTargets({ includeUnowned: true })
-				.map((target) => target.colorId)
-		);
+		// Keep the purchase scope explicit: with a green inclusion rectangle,
+		// colors are collected only from inside it. Red rectangles always win.
+		const scopedPendingTargets = getRemainingTargets({ includeUnowned: true })
+			.filter((target) => coordinateAllowedByAreas(target.x, target.y));
+		const pendingColors = new Set(scopedPendingTargets.map((target) => target.colorId));
 
 		const missing = [...pendingColors]
 			.filter((id) => id !== -1 && !FREE_COLOR_IDS.has(id))
@@ -1479,16 +1506,18 @@
 			throw new Error("Pare o bot antes de comprar cores.");
 		}
 
-		setStatus("syncing", "Verificando as cores dos pixels pendentes...");
+		const areaScope = describeAreaPurchaseScope();
+		setStatus("syncing", "Verificando cores pendentes " + areaScope + "...");
 		const missing = await getMissingRequiredColors();
 		if (!missing.length) {
-			setStatus("idle", "Nenhuma cor precisa ser comprada para os pixels pendentes.");
+			setStatus("idle", "Nenhuma cor precisa ser comprada para os pixels pendentes " + areaScope + ".");
 			return { bought: 0, total: 0, insufficient: false };
 		}
 
 		const ok = confirm(
 			"Comprar " + missing.length +
-			" cor(es) necessaria(s) apenas para os pixels que ainda nao estao prontos?"
+			" cor(es) necessaria(s) apenas para os pixels que ainda nao estao prontos " +
+			areaScope + "?"
 		);
 		if (!ok) {
 			setStatus("idle", "Compra cancelada.");
