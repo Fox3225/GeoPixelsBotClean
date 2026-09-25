@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GhostPixel Bot Clean
 // @namespace    https://github.com/Fox3225/GeoPixelsBotClean
-// @version      1.1.8-clean
+// @version      1.1.9-clean
 // @description  Clean and optimized GeoPixels userscript for painting ghost images, syncing progress, completion notifications, prioritizing colors, buying missing colors, and managing Energy Capacity.
 // @author       Fox3225 + Codex
 // @match        https://geopixels.net/*
@@ -23,7 +23,7 @@
 	"use strict";
 
 	const win = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
-	const VERSION = "1.1.8-clean";
+	const VERSION = "1.1.9-clean";
 	const ACCOUNT_MONITOR_URL = "http://127.0.0.1:47631/connect";
 	const TILE_SIZE = 1000;
 	const TILE_BATCH_SIZE = 9;
@@ -31,7 +31,7 @@
 	const REQUEST_PAUSE_MS = 1200;
 	const EMPTY_ENERGY_PAUSE_MIN_MS = 15000;
 	const PURCHASE_RESULT_TIMEOUT_MS = 12000;
-	const COLOR_PURCHASE_PAUSE_MS = 300;
+	const COLOR_PURCHASE_PAUSE_MS = 1200;
 	const MAX_COLOR_PURCHASES_PER_RUN = 5;
 	const ENERGY_CAPACITY_PURCHASE_CHUNK = 50;
 	const SETTINGS_KEY = "ghostpixel_clean_settings";
@@ -703,6 +703,16 @@
 		return new Promise((resolve) => setTimeout(resolve, ms));
 	}
 
+	function withTimeout(promise, timeoutMs, message) {
+		let timeoutId;
+		return Promise.race([
+			Promise.resolve(promise),
+			new Promise((resolve, reject) => {
+				timeoutId = setTimeout(() => reject(new Error(message)), timeoutMs);
+			}),
+		]).finally(() => clearTimeout(timeoutId));
+	}
+
 	function parseColorList(text) {
 		return String(text || "")
 			.split(",")
@@ -1164,14 +1174,33 @@
 	}
 
 	async function callPagePurchase(type, amount) {
-		const direct = await callPurchaseEndpoint(type, amount);
+		let direct;
+		try {
+			direct = await withTimeout(
+				callPurchaseEndpoint(type, amount),
+				PURCHASE_RESULT_TIMEOUT_MS,
+				"A compra demorou demais e foi interrompida."
+			);
+		} catch (error) {
+			return {
+				ok: false,
+				status: 0,
+				text: error && error.message ? error.message : "Tempo limite excedido na compra.",
+				type,
+				amount,
+			};
+		}
 		if (direct && (direct.ok || direct.status !== 0)) return direct;
 
 		installPurchaseObserver();
 		try {
 			const makePurchase = await waitForPageFunction("MakePurchase", 1500);
 			const startedAt = Date.now();
-			const returned = await makePurchase(type, amount);
+			const returned = await withTimeout(
+				makePurchase(type, amount),
+				PURCHASE_RESULT_TIMEOUT_MS,
+				"A compra demorou demais e foi interrompida."
+			);
 			if (returned && typeof returned === "object" && "ok" in returned) return returned;
 			const observed = await waitForPurchaseResult(type, amount, startedAt);
 			if (observed && observed.status !== 0) return observed;
@@ -1203,17 +1232,21 @@
 		].join("|");
 	}
 
-	function invalidateTargets() {
+	function invalidateTargets(options = {}) {
 		targetCache = null;
 		boardColors.clear();
 		tileTimestamps.clear();
 		state.serverTimestamp = 0;
-		state.totalTargets = 0;
-		state.remaining = 0;
+		if (!options.preserveProgress) {
+			state.totalTargets = 0;
+			state.remaining = 0;
+		}
 	}
 
 	function buildTargets(options = {}) {
 		const includeUnowned = !!options.includeUnowned;
+		const onlyUnowned = !!options.onlyUnowned;
+		const skipOrdering = !!options.skipOrdering;
 		const source = getGhostSource();
 		if (!source) {
 			throw new Error("Ghost image nao carregada. Carregue ou posicione a ghost image no GeoPixels primeiro.");
@@ -1227,6 +1260,8 @@
 			source.imageData.data.length,
 			settingsSignature(),
 			includeUnowned ? "all-colors" : "owned-colors",
+			onlyUnowned ? "only-unowned" : "all-eligible",
+			skipOrdering ? "source-order" : "priority-order",
 		].join(":");
 
 		if (targetCache && targetCache.sourceKey === sourceKey) return targetCache;
@@ -1241,6 +1276,10 @@
 		const width = source.imageData.width;
 
 		for (let dataIndex = 0, pixelIndex = 0; dataIndex < data.length; dataIndex += 4, pixelIndex++) {
+			const x = source.gridX + (pixelIndex % width);
+			const y = source.gridY - Math.floor(pixelIndex / width);
+			if (!coordinateAllowedByAreas(x, y)) continue;
+
 			const colorId = rgbaToColorId(data[dataIndex], data[dataIndex + 1], data[dataIndex + 2], data[dataIndex + 3]);
 			const isTransparent = colorId === -1;
 			const isFree = FREE_COLOR_IDS.has(colorId);
@@ -1250,10 +1289,7 @@
 			if (priority.size && !priority.has(colorId)) continue;
 			if (ignored.has(colorId)) continue;
 			if (!includeUnowned && owned && !isFree && !owned.has(colorId)) continue;
-
-			const x = source.gridX + (pixelIndex % width);
-			const y = source.gridY - Math.floor(pixelIndex / width);
-			if (!coordinateAllowedByAreas(x, y)) continue;
+			if (onlyUnowned && (isFree || (owned && owned.has(colorId)))) continue;
 			const key = coordKey(x, y);
 			const target = { x, y, key, colorId };
 			const tk = tileKey(x, y);
@@ -1266,12 +1302,12 @@
 
 		targetCache = {
 			sourceKey,
-			targets: orderTargets(targets),
+			targets: skipOrdering ? targets : orderTargets(targets),
 			targetKeys,
 			targetsByTile,
 			tileKeys: [...targetsByTile.keys()],
 		};
-		state.totalTargets = targetCache.targets.length;
+		if (!options.silent) state.totalTargets = targetCache.targets.length;
 		return targetCache;
 	}
 
@@ -1343,33 +1379,40 @@
 		const owned = getOwnedColorIds();
 		if (!owned) throw new Error("Lista de cores compradas ainda nao carregou no GeoPixels.");
 
-		// Force a full, current board comparison that also includes targets whose
-		// paid colors are not owned yet. Normal painting still excludes them.
-		invalidateTargets();
-		await syncBoard({ includeUnowned: true });
-		const cache = buildTargets({ includeUnowned: true });
-		const unsynced = cache.targets.filter((target) => !boardColors.has(target.key));
-		if (unsynced.length) {
-			throw new Error(
-				"Nao foi possivel verificar " + unsynced.length +
-				" pixel(s) no tabuleiro. Tente sincronizar novamente antes de comprar."
-			);
+		// Buying only needs pixels whose paid colors are not owned. Avoiding the
+		// normal priority sort keeps large templates responsive during this scan.
+		const purchaseOptions = {
+			includeUnowned: true,
+			onlyUnowned: true,
+			skipOrdering: true,
+			silent: true,
+		};
+		invalidateTargets({ preserveProgress: true });
+		try {
+			await syncBoard(purchaseOptions);
+			const cache = buildTargets(purchaseOptions);
+			let unsyncedCount = 0;
+			const pendingColors = new Set();
+			for (const target of cache.targets) {
+				if (!boardColors.has(target.key)) {
+					unsyncedCount++;
+					continue;
+				}
+				if (boardColors.get(target.key) !== target.colorId) {
+					pendingColors.add(target.colorId);
+				}
+			}
+			if (unsyncedCount) {
+				throw new Error(
+					"Nao foi possivel verificar " + unsyncedCount +
+					" pixel(s) no tabuleiro. Tente sincronizar novamente antes de comprar."
+				);
+			}
+
+			return [...pendingColors].sort((a, b) => a - b);
+		} finally {
+			invalidateTargets({ preserveProgress: true });
 		}
-
-		// Keep the purchase scope explicit: with a green inclusion rectangle,
-		// colors are collected only from inside it. Red rectangles always win.
-		const scopedPendingTargets = getRemainingTargets({ includeUnowned: true })
-			.filter((target) => coordinateAllowedByAreas(target.x, target.y));
-		const pendingColors = new Set(scopedPendingTargets.map((target) => target.colorId));
-
-		const missing = [...pendingColors]
-			.filter((id) => id !== -1 && !FREE_COLOR_IDS.has(id))
-			.filter((id) => !owned.has(id))
-			.sort((a, b) => a - b);
-
-		// Restore the normal paintable-only target view for the panel and bot.
-		buildTargets();
-		return missing;
 	}
 
 	function prepareCompletionNotifications() {
@@ -1536,14 +1579,20 @@
 			const result = await buyColor(colorId);
 			if (result === "insufficient") {
 				setStatus("waiting", "Pixels insuficientes. Compradas " + bought + "/" + purchaseBatch.length + ".");
-				invalidateTargets();
+				invalidateTargets({ preserveProgress: true });
 				return { bought, total: purchaseBatch.length, remaining: missing.length - bought, insufficient: true };
 			}
-			if (result === true) bought++;
+			if (result !== true) {
+				const remaining = missing.length - bought;
+				setStatus("error", "A compra falhou e o lote foi interrompido para evitar travamentos. Ainda faltam " + remaining + " cor(es).");
+				invalidateTargets({ preserveProgress: true });
+				return { bought, total: purchaseBatch.length, remaining, failed: true, insufficient: false };
+			}
+			bought++;
 			await delay(COLOR_PURCHASE_PAUSE_MS);
 		}
 
-		invalidateTargets();
+		invalidateTargets({ preserveProgress: true });
 		const remaining = missing.length - bought;
 		setStatus(
 			"idle",
@@ -1642,13 +1691,13 @@
 				}
 			}
 		}
-		updateProgress();
+		if (!options.silent) updateProgress();
 	}
 
 	function getRemainingTargets(options = {}) {
 		const cache = buildTargets(options);
 		const remaining = cache.targets.filter((target) => boardColors.get(target.key) !== target.colorId);
-		if (!settings.prioritizeIncorrectColors) return remaining;
+		if (!settings.prioritizeIncorrectColors || options.skipOrdering) return remaining;
 
 		return remaining
 			.map((target, index) => ({
@@ -2526,7 +2575,6 @@
 			try {
 				const result = await buyMissingGhostColors();
 				if (result && result.cancelled) return;
-				updateProgress();
 			} catch (error) {
 				log("error", error);
 				setStatus("error", error && error.message ? error.message : String(error));
