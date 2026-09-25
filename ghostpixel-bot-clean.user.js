@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GhostPixel Bot Clean
 // @namespace    https://github.com/Fox3225/GeoPixelsBotClean
-// @version      1.1.7-clean
+// @version      1.1.8-clean
 // @description  Clean and optimized GeoPixels userscript for painting ghost images, syncing progress, completion notifications, prioritizing colors, buying missing colors, and managing Energy Capacity.
 // @author       Fox3225 + Codex
 // @match        https://geopixels.net/*
@@ -23,7 +23,7 @@
 	"use strict";
 
 	const win = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
-	const VERSION = "1.1.7-clean";
+	const VERSION = "1.1.8-clean";
 	const ACCOUNT_MONITOR_URL = "http://127.0.0.1:47631/connect";
 	const TILE_SIZE = 1000;
 	const TILE_BATCH_SIZE = 9;
@@ -32,6 +32,7 @@
 	const EMPTY_ENERGY_PAUSE_MIN_MS = 15000;
 	const PURCHASE_RESULT_TIMEOUT_MS = 12000;
 	const COLOR_PURCHASE_PAUSE_MS = 300;
+	const MAX_COLOR_PURCHASES_PER_RUN = 5;
 	const ENERGY_CAPACITY_PURCHASE_CHUNK = 50;
 	const SETTINGS_KEY = "ghostpixel_clean_settings";
 
@@ -1513,32 +1514,43 @@
 			setStatus("idle", "Nenhuma cor precisa ser comprada para os pixels pendentes " + areaScope + ".");
 			return { bought: 0, total: 0, insufficient: false };
 		}
+		const purchaseBatch = missing.slice(0, MAX_COLOR_PURCHASES_PER_RUN);
+		const deferred = missing.length - purchaseBatch.length;
 
 		const ok = confirm(
-			"Comprar " + missing.length +
+			"Comprar " + purchaseBatch.length +
 			" cor(es) necessaria(s) apenas para os pixels que ainda nao estao prontos " +
-			areaScope + "?"
+			areaScope + "?" +
+			(deferred > 0
+				? "\n\nO limite e de " + MAX_COLOR_PURCHASES_PER_RUN +
+					" por vez. Outras " + deferred + " cor(es) ficarao para a proxima compra."
+				: "")
 		);
 		if (!ok) {
 			setStatus("idle", "Compra cancelada.");
-			return { bought: 0, total: missing.length, cancelled: true };
+			return { bought: 0, total: purchaseBatch.length, remaining: missing.length, cancelled: true };
 		}
 
 		let bought = 0;
-		for (const colorId of missing) {
+		for (const colorId of purchaseBatch) {
 			const result = await buyColor(colorId);
 			if (result === "insufficient") {
-				setStatus("waiting", "Pixels insuficientes. Compradas " + bought + "/" + missing.length + ".");
+				setStatus("waiting", "Pixels insuficientes. Compradas " + bought + "/" + purchaseBatch.length + ".");
 				invalidateTargets();
-				return { bought, total: missing.length, insufficient: true };
+				return { bought, total: purchaseBatch.length, remaining: missing.length - bought, insufficient: true };
 			}
 			if (result === true) bought++;
 			await delay(COLOR_PURCHASE_PAUSE_MS);
 		}
 
 		invalidateTargets();
-		setStatus("idle", bought + "/" + missing.length + " cor(es) comprada(s).");
-		return { bought, total: missing.length, insufficient: false };
+		const remaining = missing.length - bought;
+		setStatus(
+			"idle",
+			bought + "/" + purchaseBatch.length + " cor(es) comprada(s)." +
+			(remaining > 0 ? " Ainda faltam " + remaining + " cor(es)." : "")
+		);
+		return { bought, total: purchaseBatch.length, remaining, insufficient: false };
 	}
 
 	function loadImage(src) {
